@@ -1,4 +1,4 @@
-solana-py
+solana
 solders
 websockets
 base58
