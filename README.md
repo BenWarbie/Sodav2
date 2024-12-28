@@ -103,14 +103,41 @@ echo $VIRTUAL_ENV  # Should show path to mev-bot-env
 
 1. Start the transaction monitor:
 ```bash
+# Change to bot directory
 cd bot
+
+# Run in dry-run mode (recommended for testing)
+python -m src.monitor --dry-run
+
+# Run in live mode (requires minimum 0.1 SOL balance)
 python -m src.monitor
 ```
 
 2. Monitor output for sandwich opportunities:
-- The bot will display detected Raydium AMM transactions
-- Potential sandwich opportunities will be highlighted
-- Transaction details and pool information will be logged
+```
+# Example output format:
+2024-01-28 16:11:27,691 - __main__ - INFO - Monitoring Raydium AMM transactions...
+2024-01-28 16:11:27,967 - httpx - INFO - HTTP Request: POST https://...
+2024-01-28 16:11:28,042 - __main__ - INFO - Detected swap opportunity:
+- Pool: TOKEN_A/TOKEN_B
+- Amount In: X TOKEN_A
+- Expected Out: Y TOKEN_B
+- Potential Profit: Z SOL
+```
+
+3. Rate Limiting Considerations:
+- Default: 15 requests per second (Quicknode free tier)
+- Monitor console for rate limit warnings
+- Adjust monitoring parameters in config.py if needed
+
+4. Transaction Verification:
+```bash
+# Check transaction status
+python -m src.check_transactions
+
+# View recent transactions
+solana transaction-history $(solana-keygen pubkey ~/my-wallet.json) --url devnet
+```
 
 ## Project Structure
 
@@ -160,6 +187,40 @@ flake8
 - Rate limited to comply with Quicknode free tier (15 req/sec)
 - Includes comprehensive error handling and logging
 - Monitor RPC usage to avoid exceeding rate limits
+
+## Troubleshooting
+
+### Common Issues
+
+1. Rate Limit Exceeded (429 Error):
+   ```
+   HTTP Request: POST https://... "HTTP/1.1 429 Too Many Requests"
+   ```
+   - Solution: Reduce monitoring frequency or upgrade Quicknode plan
+   - Workaround: Add delay between requests in config.py
+
+2. Import Errors:
+   ```
+   ImportError: attempted relative import with no known parent package
+   ```
+   - Solution: Run using module syntax: `python -m src.monitor`
+   - Ensure you're in the correct directory (bot/)
+
+3. Airdrop Failures:
+   - Verify Devnet status: `solana cluster-version --url devnet`
+   - Check current balance before requesting
+   - Use solfaucet.com as alternative
+
+4. Transaction Errors:
+   - Verify wallet has sufficient SOL
+   - Check recent blockhash is valid
+   - Ensure proper transaction signing
+
+### Getting Help
+- Check logs in console output
+- Verify configuration in config.py
+- Ensure all prerequisites are installed
+- Run in dry-run mode for testing
 
 ## License
 
