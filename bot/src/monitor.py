@@ -23,7 +23,8 @@ from .config import (
     TOKEN_PROGRAM_ID,
     load_keypair,
 )
-from .ray_log_decoder import decode_ray_log, analyze_swap_opportunity
+from .ray_log_decoder import decode_ray_log
+from .simulation import simulate_sandwich
 from .transaction import TransactionBuilder, PoolDetails
 from .executor import TransactionExecutor
 
@@ -192,30 +193,44 @@ class TransactionMonitor:
                         decoded = decode_ray_log(ray_log_data)
                         
                         if decoded:
-                            # Analyze for sandwich opportunity
-                            opportunity = analyze_swap_opportunity(decoded)
+                            # Simulate sandwich opportunity
+                            simulation = simulate_sandwich(decoded, self.pool_details, dry_run=test_mode)
                             
-                            if opportunity:
+                            if simulation:
                                 self.total_opportunities += 1
-                                is_profitable = opportunity['estimated_profit'] > 0
-                                large_enough = opportunity['amount_in'] >= self.min_trade_size
+                                is_profitable = simulation.is_profitable
+                                large_enough = decoded['amount_in'] >= self.min_trade_size
                                 
                                 if is_profitable:
                                     self.successful_opportunities += 1
                                     logger.info("\n🚨 === POTENTIAL SANDWICH OPPORTUNITY === 🚨")
                                     logger.info(f"Transaction: {signature}")
-                                    logger.info(f"Amount In: {opportunity['amount_in']/1e9:.4f} SOL")
-                                    logger.info(f"Amount Out: {opportunity['amount_out']/1e9:.4f} SOL")
-                                    logger.info(f"Price Impact: {opportunity['price_impact']*100:.2f}%")
-                                    logger.info(f"Estimated Profit: {opportunity['estimated_profit']/1e9:.4f} SOL")
+                                    logger.info(f"Amount In: {decoded['amount_in']/1e9:.4f} SOL")
+                                    logger.info(f"Amount Out: {decoded['amount_out']/1e9:.4f} SOL")
+                                    logger.info(f"Front-run Profit: {simulation.front_run_profit/1e9:.4f} SOL")
+                                    logger.info(f"Back-run Profit: {simulation.back_run_profit/1e9:.4f} SOL")
+                                    logger.info(f"Gas Cost: {simulation.gas_cost/1e9:.4f} SOL")
+                                    logger.info(f"Pool Fees: {simulation.pool_fees/1e9:.4f} SOL")
+                                    logger.info(f"Net Profit: {simulation.net_profit/1e9:.4f} SOL")
                                 
                                 # Execute or simulate trade
                                 if is_profitable and large_enough and not self.dry_run:
                                     try:
-                                        front_tx, back_tx = await self.builder.build_sandwich_transactions(opportunity)
+                                        # Calculate front-run and back-run amounts (25% of detected trade)
+                                        front_run_amount = decoded['amount_in'] // 4
+                                        back_run_amount = front_run_amount
+                                        
+                                        front_tx, back_tx = await self.builder.build_sandwich_transactions(
+                                            front_run_amount=front_run_amount,
+                                            user_amount=decoded['amount_in'],
+                                            back_run_amount=back_run_amount,
+                                            source_token=self.pool_details.token_a_account,
+                                            destination_token=self.pool_details.token_b_account,
+                                            minimum_output_amount=int(decoded['amount_out'] * 0.98)  # 2% slippage
+                                        )
                                         result = await self.executor.execute_sandwich(front_tx, back_tx)
                                         if result:
-                                            self.total_profit += opportunity['estimated_profit']
+                                            self.total_profit += simulation.net_profit
                                             logger.info("Trade executed successfully!")
                                             logger.info(f"Front-run tx: https://explorer.solana.com/tx/{result['front_tx']}?cluster=devnet")
                                             logger.info(f"Back-run tx: https://explorer.solana.com/tx/{result['back_tx']}?cluster=devnet")

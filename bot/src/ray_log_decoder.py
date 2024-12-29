@@ -197,77 +197,6 @@ def decode_ray_log(ray_log: str) -> Optional[Dict]:
         logger.error(f"Failed to decode ray_log: {e}")
         return None
 
-def analyze_swap_opportunity(decoded_log: Dict) -> Optional[Dict]:
-    """Analyze decoded ray_log data for potential sandwich opportunities.
-    
-    Args:
-        decoded_log: Decoded ray_log data
-        
-    Returns:
-        Dictionary containing opportunity analysis if profitable
-    """
-    try:
-        if not decoded_log or 'amount_in' not in decoded_log:
-            return None
-            
-        pool_type = decoded_log.get('pool_type')
-        if not pool_type or pool_type not in POOL_CONFIGS:
-            logger.debug(f"Unsupported pool type: {pool_type}")
-            return None
-            
-        pool_config = POOL_CONFIGS[pool_type]
-        amount_in = decoded_log['amount_in']
-        amount_out = decoded_log['amount_out']
-        
-        # Skip small transactions
-        if amount_in < pool_config['min_amount_threshold']:
-            logger.debug(f"Transaction too small: {amount_in} < {pool_config['min_amount_threshold']}")
-            return None
-            
-        # Calculate fees
-        fee_amount, fee_rate = calculate_fees(amount_in, pool_type)
-        
-        # Calculate price impact (accounting for fees)
-        amount_in_after_fees = amount_in - fee_amount
-        price_impact = Decimal(str((amount_out - amount_in_after_fees))) / Decimal(str(amount_in))
-        
-        # Consider slippage
-        effective_price_impact = price_impact * (1 - pool_config['max_slippage'])
-        
-        # Analyze potential profit
-        if abs(effective_price_impact) >= pool_config['min_price_impact']:
-            estimated_profit = int(amount_in * abs(effective_price_impact) * Decimal("0.5"))
-            
-            # Account for our own transaction fees
-            our_fees = calculate_fees(estimated_profit, pool_type)[0]
-            net_profit = estimated_profit - our_fees
-            
-            if net_profit <= 0:
-                logger.debug("Opportunity not profitable after fees")
-                return None
-                
-            return {
-                'pool_type': pool_type,
-                'amount_in': amount_in,
-                'amount_out': amount_out,
-                'price_impact': float(price_impact),
-                'effective_price_impact': float(effective_price_impact),
-                'timestamp': decoded_log['timestamp_in'],
-                'estimated_profit': estimated_profit,
-                'net_profit': net_profit,
-                'fees': {
-                    'rate': float(fee_rate),
-                    'amount': fee_amount,
-                    'our_fees': our_fees
-                }
-            }
-            
-        return None
-        
-    except Exception as e:
-        logger.error(f"Failed to analyze swap opportunity: {e}", exc_info=True)
-        return None
-
 if __name__ == '__main__':
     # Test with example ray_log
     test_log = 'A9i7rKplAAAAK/4CAAAAAAACAAAAAAAAANi7rKplAAAAmp+7Iy8vAwDnzAxpCQAAAAuNKwEAAAAA'
@@ -279,11 +208,3 @@ if __name__ == '__main__':
         print("\nDecoded ray_log data:")
         for key, value in result.items():
             print(f"{key}: {value}")
-            
-        opportunity = analyze_swap_opportunity(result)
-        if opportunity:
-            print("\nPotential sandwich opportunity detected!")
-            print(f"Amount In: {opportunity['amount_in']} lamports")
-            print(f"Amount Out: {opportunity['amount_out']} lamports")
-            print(f"Price Impact: {opportunity['price_impact']*100:.2f}%")
-            print(f"Estimated Profit: {opportunity['estimated_profit']} lamports")
