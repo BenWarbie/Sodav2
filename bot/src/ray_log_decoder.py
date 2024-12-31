@@ -104,18 +104,24 @@ def determine_trade_direction(amount_in: int, amount_out: int, pool_type: str) -
         if amount_in == 1_000_000_000 and amount_out == 1_000_000:  # 1 SOL = 1 USDC
             return "sell"
             
-        # Count decimal places to determine token type
-        input_decimals = len(str(amount_in))
-        output_decimals = len(str(amount_out))
+        # Normalize amounts to their base units (1.0)
+        # For SOL: 1.0 SOL = 1_000_000_000 (9 decimals)
+        # For USDC/USDT: 1.0 USDC = 1_000_000 (6 decimals)
+        sol_decimals = 9
+        usdc_decimals = 6
         
-        # SOL amounts have 10 digits (1 SOL = 1_000_000_000)
-        # USDC/USDT amounts have 8 digits or less (40 USDC = 40_000_000)
-        is_input_sol = input_decimals >= 10
-        is_output_sol = output_decimals >= 10
+        # Convert amounts to decimal values
+        amount_in_decimal = amount_in / (10 ** (sol_decimals if amount_in >= 1_000_000_000 else usdc_decimals))
+        amount_out_decimal = amount_out / (10 ** (sol_decimals if amount_out >= 1_000_000_000 else usdc_decimals))
         
-        # Buy: SOL -> USDC/USDT (input is SOL, output is USDC/USDT)
-        # Sell: USDC/USDT -> SOL (input is USDC/USDT, output is SOL)
-        return "buy" if is_input_sol and not is_output_sol else "sell"
+        # Buy: Input is SOL (9 decimals), Output is USDC/USDT (6 decimals)
+        # Example: 2 SOL (2_000_000_000) -> 40 USDC (40_000_000)
+        if amount_in >= 1_000_000_000 and amount_out < 1_000_000_000:
+            return "buy"
+        # Sell: Input is USDC/USDT (6 decimals), Output is SOL (9 decimals)
+        # Example: 40 USDC (40_000_000) -> 2 SOL (2_000_000_000)
+        else:
+            return "sell"
     
     return "unknown"
 
