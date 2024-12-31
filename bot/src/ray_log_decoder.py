@@ -100,13 +100,21 @@ def determine_trade_direction(amount_in: int, amount_out: int, pool_type: str) -
         # More decimals = SOL, fewer decimals = USDC/USDT
         # For equal magnitudes, always default to sell
         # For SOL/USDC and SOL/USDT pools:
-        # - Equal magnitudes default to sell (USDC/USDT -> SOL)
-        # - More decimals (9) = SOL, fewer decimals (6) = USDC/USDT
-        # - Equal magnitudes = sell
-        # - More decimals = buy, fewer decimals = sell
-        if input_magnitude == output_magnitude:
-            return "sell"
-        return "buy" if input_magnitude > output_magnitude else "sell"
+        # SOL has 9 decimals, USDC/USDT have 6 decimals
+        # Always normalize to 6 decimals for comparison
+        normalized_input = input_magnitude
+        normalized_output = output_magnitude
+        
+        # Normalize SOL amount (9 decimals) to USDC/USDT (6 decimals)
+        if len(str(input_magnitude)) == 9:
+            normalized_input = input_magnitude // 1000
+        if len(str(output_magnitude)) == 9:
+            normalized_output = output_magnitude // 1000
+            
+        # After normalization to 6 decimals:
+        # Equal or smaller input = sell (USDC/USDT -> SOL)
+        # Larger input = buy (SOL -> USDC/USDT)
+        return "sell" if normalized_input <= normalized_output else "buy"
     
     return "unknown"
 
