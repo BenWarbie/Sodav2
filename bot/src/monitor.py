@@ -94,7 +94,7 @@ class TransactionMonitor:
 
     async def update_pool_reserves(self, pool_type: str) -> None:
         """Update pool reserves for the given pool type.
-        
+
         Args:
             pool_type: Pool identifier (e.g., "SOL/USDC")
         """
@@ -102,26 +102,49 @@ class TransactionMonitor:
             # Get pool account info
             pool_account = self.pool_details.amm_id
             response = await self.client.get_account_info(pool_account)
-            
+
             if response and response.value:
                 data = response.value.data
-                # Parse pool data (simplified for now)
-                token_a_reserve = int.from_bytes(data[64:72], byteorder='little')
-                token_b_reserve = int.from_bytes(data[72:80], byteorder='little')
+                data_len = len(data)
+                logger.info(f"Retrieved pool data length: {data_len} bytes")
                 
-                self.pool_reserves_cache[pool_type] = {
-                    "token_a": token_a_reserve,
-                    "token_b": token_b_reserve,
-                    "last_update": time.time()
-                }
-                logger.info("Updated pool reserves for %s - A: %d, B: %d", 
-                          pool_type, token_a_reserve, token_b_reserve)
+                if data_len < 288:  # Minimum required length (256 + 16 + 16)
+                    logger.error(f"Pool data too short: {data_len} bytes")
+                    return
+                
+                try:
+                    # Parse pool data according to Raydium LIQUIDITY_STATE_LAYOUT_V4
+                    # First 32 u64 fields (256 bytes), then swapBaseInAmount (u128)
+                    base_reserve_offset = 256  # 32 fields × 8 bytes
+                    quote_reserve_offset = base_reserve_offset + 16  # After first u128
+                    
+                    token_a_reserve = int.from_bytes(data[base_reserve_offset:base_reserve_offset+16], byteorder="little")
+                    token_b_reserve = int.from_bytes(data[quote_reserve_offset:quote_reserve_offset+16], byteorder="little")
+                    
+                    logger.info(f"Pool {pool_type} reserves:")
+                    logger.info(f"Token A reserve: {token_a_reserve} ({token_a_reserve / 1e9:.4f} SOL)")
+                    logger.info(f"Token B reserve: {token_b_reserve} ({token_b_reserve / 1e6:.4f} USDC/USDT)")
+                    
+                    self.pool_reserves_cache[pool_type] = {
+                        "token_a": token_a_reserve,
+                        "token_b": token_b_reserve,
+                        "last_update": time.time(),
+                    }
+                except Exception as e:
+                    logger.error(f"Error parsing pool reserves: {e}")
+                    return
+                logger.info(
+                    "Updated pool reserves for %s - A: %d, B: %d",
+                    pool_type,
+                    token_a_reserve,
+                    token_b_reserve,
+                )
             else:
                 logger.error("Failed to fetch pool account data")
-                
+
         except Exception as e:
             logger.error("Error updating pool reserves: %s", e)
-            
+
     async def subscribe_to_program_logs(self) -> Dict:
         """Create a subscription request for program logs."""
         if not self.check_rate_limit():
@@ -236,18 +259,27 @@ class TransactionMonitor:
                 logger.info("  Raw log: %s", log)
 
             # Look for Raydium AMM program logs
-            raydium_logs = [log for log in logs if "Program " + RAYDIUM_AMM_PROGRAM_ID in log]
+            raydium_logs = [
+                log for log in logs if "Program " + RAYDIUM_AMM_PROGRAM_ID in log
+            ]
             if raydium_logs:
                 logger.info("Found Raydium AMM logs (%d):", len(raydium_logs))
                 for log in raydium_logs:
                     logger.info("  Raydium log: %s", log)
-                    
+
                 # Check for specific Raydium instruction patterns
-                swap_instructions = [log for log in raydium_logs if any(pattern in log for pattern in [
-                    "Instruction: Swap",
-                    "ray_log:",
-                    "Program data: ",
-                ])]
+                swap_instructions = [
+                    log
+                    for log in raydium_logs
+                    if any(
+                        pattern in log
+                        for pattern in [
+                            "Instruction: Swap",
+                            "ray_log:",
+                            "Program data: ",
+                        ]
+                    )
+                ]
                 if swap_instructions:
                     logger.info("Found potential swap instructions:")
                     for instruction in swap_instructions:
@@ -260,7 +292,7 @@ class TransactionMonitor:
                     logger.info("Raw log: %s", log)
                     ray_log_data = log.split("ray_log: ")[1]
                     logger.info("Extracted ray_log data: %s", ray_log_data)
-                    
+
                     try:
                         decoded = decode_ray_log(ray_log_data)
                         logger.info("Decoded ray_log data: %s", decoded)
@@ -275,51 +307,94 @@ class TransactionMonitor:
                         amount_out = decoded.get("amount_out", 0)
                         pool_type = decoded.get("pool_type", "unknown")
                         pool_id = decoded.get("pool_id", "unknown")
-                        
+
                         # Update pool reserves if needed
                         now = time.time()
                         if now - self.last_pool_update > 60:  # Update every 60 seconds
                             await self.update_pool_reserves(pool_type)
+                            # Update PoolDetails with latest reserves
+                            if pool_type in self.pool_reserves_cache:
+                                reserves = self.pool_reserves_cache[pool_type]
+                                self.pool_details.reserve_a = reserves['token_a']
+                                self.pool_details.reserve_b = reserves['token_b']
+                                logger.info("Updated PoolDetails reserves - A: %d, B: %d",
+                                          self.pool_details.reserve_a,
+                                          self.pool_details.reserve_b)
                             self.last_pool_update = now
-                        
+
                         logger.info("=== Validated Transaction Details ===")
                         logger.info("Transaction Signature: %s", signature)
                         logger.info("Slot: %s", slot)
-                        logger.info("Amount In: %d lamports (%.4f SOL)", amount_in, amount_in / 1e9)
-                        logger.info("Amount Out: %d lamports (%.4f SOL)", amount_out, amount_out / 1e9)
+                        logger.info(
+                            "Amount In: %d lamports (%.4f SOL)",
+                            amount_in,
+                            amount_in / 1e9,
+                        )
+                        logger.info(
+                            "Amount Out: %d lamports (%.4f SOL)",
+                            amount_out,
+                            amount_out / 1e9,
+                        )
                         logger.info("Pool Type: %s", pool_type)
                         logger.info("Pool ID: %s", pool_id)
-                        logger.info("Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet", signature)
-                        
+                        logger.info(
+                            "Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet",
+                            signature,
+                        )
+
                         # Validate data consistency
                         if amount_in <= 0 or amount_out <= 0:
-                            logger.warning("Invalid amounts detected - skipping opportunity")
+                            logger.warning(
+                                "Invalid amounts detected - skipping opportunity"
+                            )
                             continue
-                            
+
                         if pool_type not in ["SOL/USDC", "SOL/USDT"]:
-                            logger.warning("Unsupported pool type: %s - skipping", pool_type)
+                            logger.warning(
+                                "Unsupported pool type: %s - skipping", pool_type
+                            )
                             continue
-                        
+
                         # Get pool reserves and calculate slippage
                         pool_reserves = self.pool_reserves_cache.get(pool_type)
-                        if pool_reserves and time.time() - pool_reserves.get("last_update", 0) < 300:  # Valid for 5 minutes
+                        if (
+                            pool_reserves
+                            and time.time() - pool_reserves.get("last_update", 0) < 300
+                        ):  # Valid for 5 minutes
                             token_a_reserve = pool_reserves.get("token_a", 0)
                             token_b_reserve = pool_reserves.get("token_b", 0)
-                            logger.info("Pool reserves - Token A: %d, Token B: %d", 
-                                      token_a_reserve, token_b_reserve)
-                            
+                            logger.info(
+                                "Pool reserves - Token A: %d, Token B: %d",
+                                token_a_reserve,
+                                token_b_reserve,
+                            )
+
                             # Calculate price impact and max slippage
-                            price_impact = ((amount_out / amount_in) - 1) * 100 if amount_in > 0 else 0
-                            max_slippage = min(amount_in / token_a_reserve * 100, 2.0)  # Cap at 2%
-                            logger.info("  Price Impact: %.2f%%, Max Slippage: %.2f%%", 
-                                      price_impact, max_slippage)
-                        
+                            price_impact = (
+                                ((amount_out / amount_in) - 1) * 100
+                                if amount_in > 0
+                                else 0
+                            )
+                            max_slippage = min(
+                                amount_in / token_a_reserve * 100, 2.0
+                            )  # Cap at 2%
+                            logger.info(
+                                "  Price Impact: %.2f%%, Max Slippage: %.2f%%",
+                                price_impact,
+                                max_slippage,
+                            )
+
                         # Validate amounts, pool type, and slippage
-                        if (amount_in > 0 and amount_out > 0 and
-                            pool_type in ["SOL/USDC", "SOL/USDT"] and
-                            abs(price_impact) >= 0.01 and  # Min 0.01% impact
-                            abs(price_impact) <= max_slippage):  # Respect slippage
-                            logger.info("Valid swap detected with significant price impact")
+                        if (
+                            amount_in > 0
+                            and amount_out > 0
+                            and pool_type in ["SOL/USDC", "SOL/USDT"]
+                            and abs(price_impact) >= 0.01  # Min 0.01% impact
+                            and abs(price_impact) <= max_slippage
+                        ):  # Respect slippage
+                            logger.info(
+                                "Valid swap detected with significant price impact"
+                            )
                             # Simulate sandwich opportunity
                             simulation = simulate_sandwich(
                                 decoded, self.pool_details, dry_run=self.dry_run
@@ -467,21 +542,25 @@ class TransactionMonitor:
             try:
                 # Check if we should attempt reconnection
                 now = time.time()
-                if not self.subscription_active and (now - self.last_connection_attempt) >= self.connection_retry_delay:
+                if (
+                    not self.subscription_active
+                    and (now - self.last_connection_attempt)
+                    >= self.connection_retry_delay
+                ):
                     self.last_connection_attempt = now
                     logger.info("Attempting to establish WebSocket connection...")
-                    
+
                     try:
                         async with websockets.connect(DEVNET_WS_URL) as websocket:
                             # Reset retry delay on successful connection
                             self.connection_retry_delay = 5
-                            
+
                             # Subscribe to program logs
                             subscription = await self.subscribe_to_program_logs()
                             if not subscription:
                                 logger.error("Failed to create subscription request")
                                 raise Exception("Subscription request failed")
-                                
+
                             await websocket.send(json.dumps(subscription))
 
                             # Wait for subscription confirmation
@@ -496,7 +575,8 @@ class TransactionMonitor:
                                 )
                             else:
                                 logger.warning(
-                                    "Unexpected subscription response: %s", subscription_response
+                                    "Unexpected subscription response: %s",
+                                    subscription_response,
                                 )
                                 raise Exception("Invalid subscription response")
 
@@ -516,11 +596,15 @@ class TransactionMonitor:
                     except websockets.exceptions.ConnectionClosed:
                         logger.warning("WebSocket connection closed")
                         self.subscription_active = False
-                        self.connection_retry_delay = min(self.connection_retry_delay * 2, 60)
+                        self.connection_retry_delay = min(
+                            self.connection_retry_delay * 2, 60
+                        )
                     except Exception as e:
                         logger.error("WebSocket connection error: %s", e)
                         self.subscription_active = False
-                        self.connection_retry_delay = min(self.connection_retry_delay * 2, 60)
+                        self.connection_retry_delay = min(
+                            self.connection_retry_delay * 2, 60
+                        )
 
                 await asyncio.sleep(1)  # Prevent tight loop when not connected
 

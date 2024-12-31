@@ -8,6 +8,15 @@ from solders.keypair import Keypair
 logger = logging.getLogger(__name__)
 
 # Solana network configuration
+MAINNET_WS_URL = (
+    "wss://maximum-indulgent-violet.solana-mainnet.quiknode.pro/"
+    "32f29d69580822a483c88c2e8528187e7d3f0f83/"
+)
+MAINNET_HTTP_URL = (
+    "https://maximum-indulgent-violet.solana-mainnet.quiknode.pro/"
+    "32f29d69580822a483c88c2e8528187e7d3f0f83/"
+)
+
 DEVNET_WS_URL = (
     "wss://few-cosmopolitan-borough.solana-devnet.quiknode.pro/"
     "1fe1f03ce011912127d3c733c5a61f0083ec910b/"

@@ -10,10 +10,6 @@ logger = logging.getLogger(__name__)
 
 # Raydium AMM Program ID
 RAYDIUM_AMM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-import logging
-import struct
-from decimal import Decimal
-from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +62,63 @@ def calculate_fees(amount: int, pool_type: str) -> Tuple[int, Decimal]:
     fee_rate = pool_config["fee_rate"]
     fee_amount = int(amount * fee_rate)
     return fee_amount, fee_rate
+
+
+def determine_trade_direction(amount_in: int, amount_out: int, pool_type: str) -> str:
+    """Determine if a trade is buying or selling SOL based on normalized amounts.
+    
+    Args:
+        amount_in: Input amount in lamports/smallest unit
+        amount_out: Output amount in lamports/smallest unit
+        pool_type: Type of pool (e.g., "SOL/USDC")
+        
+    Returns:
+        str: "buy" if trading SOL for USDC/USDT, "sell" if trading USDC/USDT for SOL,
+             "unknown" for unsupported pool types
+    """
+    if pool_type not in POOL_CONFIGS:
+        logger.warning(f"Unsupported pool type: {pool_type}")
+        return "unknown"
+        
+    pool_config = POOL_CONFIGS[pool_type]
+    token_a_decimals = pool_config["token_a_decimals"]  # SOL decimals
+    token_b_decimals = pool_config["token_b_decimals"]  # USDC/USDT decimals
+    
+    # Normalize amounts to account for decimal differences
+    normalized_in = Decimal(str(amount_in)) / Decimal(str(10 ** token_a_decimals))
+    normalized_out = Decimal(str(amount_out)) / Decimal(str(10 ** token_b_decimals))
+    
+    if pool_type in ["SOL/USDC", "SOL/USDT"]:
+        # Buy: Trading USDC/USDT (token_b) for SOL (token_a)
+        # Example: 40 USDC -> 1.9 SOL
+        # - amount_in would be 40_000_000 (6 decimals)
+        # - amount_out would be 1_900_000_000 (9 decimals)
+        # Sell: Trading SOL (token_a) for USDC/USDT (token_b)
+        # Example: 2 SOL -> 38 USDC
+        # - amount_in would be 2_000_000_000 (9 decimals)
+        # - amount_out would be 38_000_000 (6 decimals)
+        
+        # Compare normalized amounts to determine direction
+        # For SOL/USDC:
+        # Buy: USDC (6 decimals) -> SOL (9 decimals)
+        # Example: 40 USDC (40_000_000) -> 1.9 SOL (1_900_000_000)
+        # Sell: SOL (9 decimals) -> USDC (6 decimals)
+        # Example: 2 SOL (2_000_000_000) -> 38 USDC (38_000_000)
+        
+        # Scale amounts to same decimal places (9) for comparison
+        scaled_in = Decimal(str(amount_in)) * Decimal(str(10 ** (9 - token_b_decimals)))
+        scaled_out = Decimal(str(amount_out))
+        
+        logger.debug(f"Scaled amounts - In: {scaled_in}, Out: {scaled_out}")
+        
+        # If scaled input is smaller than output, it's a buy (USDC -> SOL)
+        # If scaled input is larger than output, it's a sell (SOL -> USDC)
+        if scaled_in < scaled_out:
+            return "buy"
+        else:
+            return "sell"
+            
+    return "unknown"
 
 
 def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Dict]:
@@ -237,12 +290,7 @@ def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Di
     except Exception as e:
         logger.error("Unexpected error decoding ray_log: %s", e)
         # Try each format one last time
-        formats = [
-            ("<QQQQQQQ", 7),
-            ("<QQQQQQ", 6),
-            ("<QQQQ", 4),
-            ("<QQQ", 3)
-        ]
+        formats = [("<QQQQQQQ", 7), ("<QQQQQQ", 6), ("<QQQQ", 4), ("<QQQ", 3)]
         for fmt, expected_values in formats:
             try:
                 if len(decoded) == expected_values * 8:  # 8 bytes per u64
@@ -255,7 +303,7 @@ def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Di
                     }
             except struct.error:
                 continue
-        
+
         # Final attempt with dynamic format
         try:
             num_u64s = len(decoded) // 8
@@ -268,17 +316,24 @@ def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Di
                 }
         except struct.error:
             pass
-        
+
         return None  # All attempts failed
     finally:
         # Log validation summary for cross-checking
-        if 'values' in locals():
+        if "values" in locals():
             logger.info("\n=== Ray Log Validation Summary ===")
-            logger.info("Amount In: %s lamports", values[0] if len(values) > 0 else 'N/A')
-            logger.info("Amount Out: %s lamports", values[2] if len(values) > 3 else 'N/A')
+            logger.info(
+                "Amount In: %s lamports", values[0] if len(values) > 0 else "N/A"
+            )
+            logger.info(
+                "Amount Out: %s lamports", values[2] if len(values) > 3 else "N/A"
+            )
             logger.info("Pool Type: SOL/USDC")
             if signature:
-                logger.info("Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet", signature)
+                logger.info(
+                    "Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet",
+                    signature,
+                )
 
 
 if __name__ == "__main__":
