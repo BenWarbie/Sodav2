@@ -5,14 +5,16 @@ import base64
 import pytest
 
 from bot.src.ray_log_decoder import (POOL_CONFIGS, calculate_fees,
-                                   decode_ray_log, identify_pool)
+                                     decode_ray_log, determine_trade_direction,
+                                     identify_pool)
 
 
 @pytest.fixture
 def test_ray_log():
     """Example ray_log from a real transaction"""
     return (
-        "A9i7rKplAAAAK/4CAAAAAAACAAAAAAAAANi7rKplAAAAmp+7Iy8vAwDnzAxpCQAAAAuNKwEAAAAA"
+        "A9i7rKplAAAAK/4CAAAAAAACAAAAAAAAANi7rKplAAAAmp+7Iy8v"
+        "AwDnzAxpCQAAAAuNKwEAAAAA"
     )
 
 
@@ -104,3 +106,47 @@ def test_decode_ray_log_version_3():
     assert result is not None
     assert result["amount_in"] == 1_000_000_000
     assert result["amount_out"] == 950_000_000
+
+
+def test_determine_trade_direction_buy():
+    """Test buy order detection (SOL -> USDC)."""
+    # 2 SOL -> 40 USDC
+    # 2 SOL = 2_000_000_000 lamports (9 decimals)
+    # 40 USDC = 40_000_000 USDC smallest units (6 decimals)
+    direction = determine_trade_direction(
+        amount_in=2_000_000_000,  # 2 SOL
+        amount_out=40_000_000,  # 40 USDC
+        pool_type="SOL/USDC",
+    )
+    assert direction == "buy"
+
+
+def test_determine_trade_direction_sell():
+    """Test sell order detection (USDC -> SOL)."""
+    # 40 USDC -> 2 SOL
+    direction = determine_trade_direction(
+        amount_in=40_000_000,  # 40 USDC
+        amount_out=2_000_000_000,  # 2 SOL
+        pool_type="SOL/USDC",
+    )
+    assert direction == "sell"
+
+
+def test_determine_trade_direction_unknown_pool():
+    """Test handling of unsupported pool types."""
+    direction = determine_trade_direction(
+        amount_in=1_000_000_000, amount_out=1_000_000_000, pool_type="UNSUPPORTED"
+    )
+    assert direction == "unknown"
+
+
+def test_determine_trade_direction_equal_normalized():
+    """Test edge case with equal normalized values."""
+    # 1 SOL (9 decimals) -> 1 USDC (6 decimals)
+    direction = determine_trade_direction(
+        amount_in=1_000_000_000,  # 1 SOL
+        amount_out=1_000_000,  # 1 USDC
+        pool_type="SOL/USDC",
+    )
+    # Should default to sell when equal
+    assert direction == "sell"
