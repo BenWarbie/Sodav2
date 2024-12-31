@@ -50,6 +50,11 @@ class TransactionMonitor:
         self.subscription_id = SUBSCRIPTION_ID
         self.payer = payer
         self.dry_run = dry_run
+        self.pool_reserves_cache = {}  # Cache pool reserves to reduce RPC calls
+        self.last_pool_update = 0  # Timestamp of last pool reserves update
+        self.subscription_active = False
+        self.last_connection_attempt = 0
+        self.connection_retry_delay = 5  # Start with 5 second delay
         self.pool_details = PoolDetails(
             amm_id=Pubkey.from_string(RAYDIUM_AMM_PROGRAM_ID),
             token_program=Pubkey.from_string(TOKEN_PROGRAM_ID),
@@ -87,6 +92,36 @@ class TransactionMonitor:
         self.successful_opportunities = 0
         self.missed_opportunities = 0
 
+    async def update_pool_reserves(self, pool_type: str) -> None:
+        """Update pool reserves for the given pool type.
+        
+        Args:
+            pool_type: Pool identifier (e.g., "SOL/USDC")
+        """
+        try:
+            # Get pool account info
+            pool_account = self.pool_details.amm_id
+            response = await self.client.get_account_info(pool_account)
+            
+            if response and response.value:
+                data = response.value.data
+                # Parse pool data (simplified for now)
+                token_a_reserve = int.from_bytes(data[64:72], byteorder='little')
+                token_b_reserve = int.from_bytes(data[72:80], byteorder='little')
+                
+                self.pool_reserves_cache[pool_type] = {
+                    "token_a": token_a_reserve,
+                    "token_b": token_b_reserve,
+                    "last_update": time.time()
+                }
+                logger.info("Updated pool reserves for %s - A: %d, B: %d", 
+                          pool_type, token_a_reserve, token_b_reserve)
+            else:
+                logger.error("Failed to fetch pool account data")
+                
+        except Exception as e:
+            logger.error("Error updating pool reserves: %s", e)
+            
     async def subscribe_to_program_logs(self) -> Dict:
         """Create a subscription request for program logs."""
         if not self.check_rate_limit():
@@ -195,13 +230,96 @@ class TransactionMonitor:
                                     elif "to" not in tx_details:
                                         tx_details["to"] = part
 
-                # Look for ray_log entries
-                for log in logs:
-                    if "ray_log:" in log:
-                        ray_log_data = log.split("ray_log: ")[1]
-                        decoded = decode_ray_log(ray_log_data)
+                # Print raw logs for debugging
+            logger.info("Transaction logs for %s:", signature)
+            for log in logs:
+                logger.info("  Raw log: %s", log)
 
-                        if decoded:
+            # Look for Raydium AMM program logs
+            raydium_logs = [log for log in logs if "Program " + RAYDIUM_AMM_PROGRAM_ID in log]
+            if raydium_logs:
+                logger.info("Found Raydium AMM logs (%d):", len(raydium_logs))
+                for log in raydium_logs:
+                    logger.info("  Raydium log: %s", log)
+                    
+                # Check for specific Raydium instruction patterns
+                swap_instructions = [log for log in raydium_logs if any(pattern in log for pattern in [
+                    "Instruction: Swap",
+                    "ray_log:",
+                    "Program data: ",
+                ])]
+                if swap_instructions:
+                    logger.info("Found potential swap instructions:")
+                    for instruction in swap_instructions:
+                        logger.info("  Swap instruction: %s", instruction)
+
+            # Look for ray_log entries
+            for log in logs:
+                if "ray_log:" in log:
+                    logger.info("=== Processing ray_log entry ===")
+                    logger.info("Raw log: %s", log)
+                    ray_log_data = log.split("ray_log: ")[1]
+                    logger.info("Extracted ray_log data: %s", ray_log_data)
+                    
+                    try:
+                        decoded = decode_ray_log(ray_log_data)
+                        logger.info("Decoded ray_log data: %s", decoded)
+                    except Exception as e:
+                        logger.error("Failed to decode ray_log: %s", e)
+                        continue
+
+                    if decoded:
+                        # Validate decoded data against expected format
+                        logger.info("Decoded ray_log data:")
+                        amount_in = decoded.get("amount_in", 0)
+                        amount_out = decoded.get("amount_out", 0)
+                        pool_type = decoded.get("pool_type", "unknown")
+                        pool_id = decoded.get("pool_id", "unknown")
+                        
+                        # Update pool reserves if needed
+                        now = time.time()
+                        if now - self.last_pool_update > 60:  # Update every 60 seconds
+                            await self.update_pool_reserves(pool_type)
+                            self.last_pool_update = now
+                        
+                        logger.info("=== Validated Transaction Details ===")
+                        logger.info("Transaction Signature: %s", signature)
+                        logger.info("Slot: %s", slot)
+                        logger.info("Amount In: %d lamports (%.4f SOL)", amount_in, amount_in / 1e9)
+                        logger.info("Amount Out: %d lamports (%.4f SOL)", amount_out, amount_out / 1e9)
+                        logger.info("Pool Type: %s", pool_type)
+                        logger.info("Pool ID: %s", pool_id)
+                        logger.info("Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet", signature)
+                        
+                        # Validate data consistency
+                        if amount_in <= 0 or amount_out <= 0:
+                            logger.warning("Invalid amounts detected - skipping opportunity")
+                            continue
+                            
+                        if pool_type not in ["SOL/USDC", "SOL/USDT"]:
+                            logger.warning("Unsupported pool type: %s - skipping", pool_type)
+                            continue
+                        
+                        # Get pool reserves and calculate slippage
+                        pool_reserves = self.pool_reserves_cache.get(pool_type)
+                        if pool_reserves and time.time() - pool_reserves.get("last_update", 0) < 300:  # Valid for 5 minutes
+                            token_a_reserve = pool_reserves.get("token_a", 0)
+                            token_b_reserve = pool_reserves.get("token_b", 0)
+                            logger.info("Pool reserves - Token A: %d, Token B: %d", 
+                                      token_a_reserve, token_b_reserve)
+                            
+                            # Calculate price impact and max slippage
+                            price_impact = ((amount_out / amount_in) - 1) * 100 if amount_in > 0 else 0
+                            max_slippage = min(amount_in / token_a_reserve * 100, 2.0)  # Cap at 2%
+                            logger.info("  Price Impact: %.2f%%, Max Slippage: %.2f%%", 
+                                      price_impact, max_slippage)
+                        
+                        # Validate amounts, pool type, and slippage
+                        if (amount_in > 0 and amount_out > 0 and
+                            pool_type in ["SOL/USDC", "SOL/USDT"] and
+                            abs(price_impact) >= 0.01 and  # Min 0.01% impact
+                            abs(price_impact) <= max_slippage):  # Respect slippage
+                            logger.info("Valid swap detected with significant price impact")
                             # Simulate sandwich opportunity
                             simulation = simulate_sandwich(
                                 decoded, self.pool_details, dry_run=self.dry_run
@@ -345,24 +463,71 @@ class TransactionMonitor:
 
     async def monitor_swaps(self):
         """Main monitoring loop for swap opportunities."""
-        try:
-            async with websockets.connect(DEVNET_WS_URL) as websocket:
-                subscription = await self.subscribe_to_program_logs()
-                await websocket.send(json.dumps(subscription))
+        while True:
+            try:
+                # Check if we should attempt reconnection
+                now = time.time()
+                if not self.subscription_active and (now - self.last_connection_attempt) >= self.connection_retry_delay:
+                    self.last_connection_attempt = now
+                    logger.info("Attempting to establish WebSocket connection...")
+                    
+                    try:
+                        async with websockets.connect(DEVNET_WS_URL) as websocket:
+                            # Reset retry delay on successful connection
+                            self.connection_retry_delay = 5
+                            
+                            # Subscribe to program logs
+                            subscription = await self.subscribe_to_program_logs()
+                            if not subscription:
+                                logger.error("Failed to create subscription request")
+                                raise Exception("Subscription request failed")
+                                
+                            await websocket.send(json.dumps(subscription))
 
-                # Wait for subscription confirmation
-                response = await websocket.recv()
-                subscription_response = json.loads(response)
-                if "result" in subscription_response:
-                    logger.info(
-                        "Successfully subscribed to Raydium AMM program logs. "
-                        "Subscription ID: %s",
-                        subscription_response["result"],
-                    )
-                else:
-                    logger.warning(
-                        "Unexpected subscription response: %s", subscription_response
-                    )
+                            # Wait for subscription confirmation
+                            response = await websocket.recv()
+                            subscription_response = json.loads(response)
+                            if "result" in subscription_response:
+                                self.subscription_active = True
+                                logger.info(
+                                    "Successfully subscribed to Raydium AMM program logs. "
+                                    "Subscription ID: %s",
+                                    subscription_response["result"],
+                                )
+                            else:
+                                logger.warning(
+                                    "Unexpected subscription response: %s", subscription_response
+                                )
+                                raise Exception("Invalid subscription response")
+
+                            # Main message processing loop
+                            while True:
+                                try:
+                                    message = await websocket.recv()
+                                    await self.process_log(message)
+                                except websockets.exceptions.ConnectionClosed:
+                                    logger.warning("WebSocket connection closed")
+                                    self.subscription_active = False
+                                    break
+                                except Exception as e:
+                                    logger.error("Error processing message: %s", e)
+                                    continue
+
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.warning("WebSocket connection closed")
+                        self.subscription_active = False
+                        self.connection_retry_delay = min(self.connection_retry_delay * 2, 60)
+                    except Exception as e:
+                        logger.error("WebSocket connection error: %s", e)
+                        self.subscription_active = False
+                        self.connection_retry_delay = min(self.connection_retry_delay * 2, 60)
+
+                await asyncio.sleep(1)  # Prevent tight loop when not connected
+
+            except Exception as e:
+                logger.error("Critical error in monitoring loop: %s", e)
+                self.subscription_active = False
+                await asyncio.sleep(5)  # Wait before retrying after critical error
 
                 logger.info("Monitoring for Raydium AMM transactions...")
 

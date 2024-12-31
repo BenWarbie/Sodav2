@@ -8,6 +8,15 @@ from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Raydium AMM Program ID
+RAYDIUM_AMM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+import logging
+import struct
+from decimal import Decimal
+from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
 # Constants for token decimals
 SOL_DECIMALS = 9
 USDC_DECIMALS = 6
@@ -59,14 +68,22 @@ def calculate_fees(amount: int, pool_type: str) -> Tuple[int, Decimal]:
     return fee_amount, fee_rate
 
 
-def decode_ray_log(ray_log: str) -> Optional[Dict]:
+def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Dict]:
     """Decode a ray_log message from Raydium AMM.
 
     Args:
         ray_log: Base64 encoded ray_log data
+        signature: Optional transaction signature for Explorer links
 
     Returns:
-        Dictionary containing decoded swap parameters if successful
+        Dictionary containing decoded swap parameters if successful:
+        {
+            'amount_in': int,      # Input amount in lamports
+            'amount_out': int,     # Output amount in lamports
+            'pool_type': str,      # Pool identifier (e.g., "SOL/USDC")
+            'pool_id': str,        # Pool address
+            'signature': str,      # Transaction signature (if provided)
+        }
     """
     try:
         # Remove "ray_log: " prefix if present
@@ -218,6 +235,16 @@ def decode_ray_log(ray_log: str) -> Optional[Dict]:
             logger.error("Failed to unpack as u32: %s", e)
 
     except Exception as e:
+        logger.error("Unexpected error decoding ray_log: %s", e)
+    finally:
+        # Log validation summary for cross-checking
+        if 'values' in locals():
+            logger.info("\n=== Ray Log Validation Summary ===")
+            logger.info("Amount In: %s lamports", values[0] if len(values) > 0 else 'N/A')
+            logger.info("Amount Out: %s lamports", values[2] if len(values) > 3 else 'N/A')
+            logger.info("Pool Type: SOL/USDC")
+            if signature:
+                logger.info("Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet", signature)
         logger.error("Failed to decode ray_log: %s", e)
         return None
 
