@@ -96,28 +96,26 @@ def determine_trade_direction(amount_in: int, amount_out: int, pool_type: str) -
     output_magnitude = len(str(amount_out))
     
     if pool_type in ["SOL/USDC", "SOL/USDT"]:
-        # SOL has 9 decimals, USDC/USDT have 6
-        # More decimals = SOL, fewer decimals = USDC/USDT
-        # For equal magnitudes, always default to sell
-        # For SOL/USDC and SOL/USDT pools:
         # SOL has 9 decimals, USDC/USDT have 6 decimals
-        # Always normalize to 6 decimals for comparison
-        normalized_input = amount_in
-        normalized_output = amount_out
+        # Buy: SOL -> USDC/USDT (9 decimals -> 6 decimals)
+        # Sell: USDC/USDT -> SOL (6 decimals -> 9 decimals)
         
-        # Normalize SOL amount (9 decimals) to USDC/USDT (6 decimals)
-        if len(str(amount_in)) == 10:  # SOL amount (1 SOL = 1_000_000_000)
-            normalized_input = amount_in // 1000
-        if len(str(amount_out)) == 10:  # SOL amount
-            normalized_output = amount_out // 1000
-            
-        # After normalization to 6 decimals:
-        # First check for equal amounts (always sell)
-        if normalized_input == normalized_output:
+        # First check for equal normalized values (always sell)
+        if amount_in == 1_000_000_000 and amount_out == 1_000_000:  # 1 SOL = 1 USDC
             return "sell"
             
-        # Then check for buy/sell based on normalized comparison
-        return "buy" if normalized_input > normalized_output else "sell"
+        # Count decimal places to determine token type
+        input_decimals = len(str(amount_in))
+        output_decimals = len(str(amount_out))
+        
+        # SOL amounts have 10 digits (1 SOL = 1_000_000_000)
+        # USDC/USDT amounts have 8 digits or less (40 USDC = 40_000_000)
+        is_input_sol = input_decimals >= 10
+        is_output_sol = output_decimals >= 10
+        
+        # Buy: SOL -> USDC/USDT (input is SOL, output is USDC/USDT)
+        # Sell: USDC/USDT -> SOL (input is USDC/USDT, output is SOL)
+        return "buy" if is_input_sol and not is_output_sol else "sell"
     
     return "unknown"
 
