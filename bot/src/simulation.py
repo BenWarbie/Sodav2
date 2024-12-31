@@ -47,17 +47,43 @@ def calculate_price_impact(amount_in: int, amount_out: int, pool_type: str) -> D
 
     # Price impact = (amount_out_expected - amount_out_actual) / amount_out_expected
     price_impact = (amount_out_decimal - amount_in_decimal) / amount_in_decimal
-    return abs(price_impact)
+    return price_impact
 
 
-def estimate_gas_cost() -> int:
-    """Estimate gas cost for sandwich transactions.
+def estimate_gas_cost(pool_type: str = None, market_conditions: str = "normal") -> int:
+    """Estimate gas cost for sandwich transactions based on market conditions.
+
+    Args:
+        pool_type: Type of pool for specific adjustments
+        market_conditions: Current market conditions ("normal", "congested", "high")
 
     Returns:
         int: Estimated gas cost in lamports
     """
-    # Conservative estimate: 10000 compute units * 2 transactions * current price
-    return 10_000 * 2 * 1  # 1 micro-lamport per compute unit
+    # Base compute units for different transaction types
+    COMPUTE_UNITS = {
+        "front_run": 200_000,  # More complex due to timing requirements
+        "back_run": 150_000,   # Slightly simpler execution
+    }
+    
+    # Fixed gas cost of 5000 lamports per transaction
+    BASE_GAS_COST = 5000  # lamports per transaction
+    
+    # Adjust gas cost based on market conditions
+    MARKET_MULTIPLIERS = {
+        "normal": 1.0,      # Standard gas cost
+        "congested": 1.5,   # 50% increase during congestion
+        "high": 2.0,        # Double gas cost during high activity
+    }
+    
+    # Get current market multiplier
+    multiplier = MARKET_MULTIPLIERS.get(market_conditions, MARKET_MULTIPLIERS["normal"])
+    
+    # Calculate total gas cost for both transactions (front-run and back-run)
+    total_gas_cost = BASE_GAS_COST * 2  # Two transactions
+    
+    # Apply market condition multiplier and add 20% safety buffer
+    return int(total_gas_cost * multiplier * 1.2)
 
 
 def simulate_sandwich(
@@ -105,23 +131,30 @@ def simulate_sandwich(
             )
             return None
 
-        # Calculate pool fees
-        pool_fee_rate = pool_config["fee_rate"]
-        pool_fees = int(
-            amount_in * pool_fee_rate * 2
-        )  # Fees for both front and back run
-
-        # Estimate profits (simplified model)
-        # Front-run: Buy tokens before large trade
+        # Estimate trade sizes and profits
+        # Front-run: Buy tokens before large trade (profit from price increase)
         front_run_size = amount_in // 4  # 25% of detected trade
-        front_run_profit = int(front_run_size * price_impact)
+        # If price impact is negative (price decreases), front-run profit is negative
+        front_run_profit = int(front_run_size * price_impact * -1)  # Inverse price impact for front-run
 
-        # Back-run: Sell tokens after large trade
+        # Back-run: Sell tokens after large trade (profit from price decrease)
+        # If price impact is negative (price decreases), back-run profit is positive
         back_run_profit = int(front_run_size * price_impact)
 
-        # Calculate gas costs
-        gas_cost = estimate_gas_cost()
+        # Calculate pool fees (0.25% per trade)
+        POOL_FEE_RATE = Decimal("0.0025")  # 0.25% fee per trade
+        front_run_fees = int(front_run_size * POOL_FEE_RATE)  # Front-run fees
+        back_run_fees = int(front_run_size * POOL_FEE_RATE * (1 + price_impact))  # Back-run fees with price impact
+        pool_fees = front_run_fees + back_run_fees  # Total fees for both trades
 
+        # Calculate gas costs with current market conditions
+        # TODO: Implement actual market condition detection
+        market_conditions = "normal"  # For now, assume normal conditions
+        gas_cost = estimate_gas_cost(pool_type, market_conditions)
+        
+        # Adjust min profit threshold based on gas costs
+        dynamic_profit_threshold = max(min_profit_threshold, gas_cost * 2)
+        
         # Calculate net profit
         net_profit = front_run_profit + back_run_profit - pool_fees - gas_cost
 
@@ -131,7 +164,7 @@ def simulate_sandwich(
             gas_cost=gas_cost,
             pool_fees=pool_fees,
             net_profit=net_profit,
-            is_profitable=net_profit >= min_profit_threshold,
+            is_profitable=net_profit >= dynamic_profit_threshold,  # Use dynamic threshold
         )
 
     except Exception as e:

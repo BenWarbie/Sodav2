@@ -636,10 +636,15 @@ class TransactionMonitor:
                     except Exception as e:
                         logger.error("Error in monitoring loop: %s", e)
                         continue
-
-        except Exception as e:
-            logger.error("Failed to connect to WebSocket: %s", e)
-            raise
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.error("WebSocket connection closed. Retrying...")
+                        self.subscription_active = False
+                        break
+                    except Exception as e:
+                        logger.error("Failed to connect to WebSocket: %s", e)
+                        self.subscription_active = False
+                        await asyncio.sleep(5)  # Wait before retrying
+                        break
 
 
 async def main():

@@ -236,6 +236,40 @@ def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Di
 
     except Exception as e:
         logger.error("Unexpected error decoding ray_log: %s", e)
+        # Try each format one last time
+        formats = [
+            ("<QQQQQQQ", 7),
+            ("<QQQQQQ", 6),
+            ("<QQQQ", 4),
+            ("<QQQ", 3)
+        ]
+        for fmt, expected_values in formats:
+            try:
+                if len(decoded) == expected_values * 8:  # 8 bytes per u64
+                    values = struct.unpack(fmt, decoded)
+                    logger.debug("Successfully decoded with format %s", fmt)
+                    return {
+                        "amount_in": values[1] if len(values) > 1 else values[0],
+                        "amount_out": values[4] if len(values) > 4 else values[1],
+                        "pool_type": "SOL/USDC",
+                    }
+            except struct.error:
+                continue
+        
+        # Final attempt with dynamic format
+        try:
+            num_u64s = len(decoded) // 8
+            if num_u64s >= 2:  # At least need amount_in and amount_out
+                values = struct.unpack(f'<{"Q"*num_u64s}', decoded)
+                return {
+                    "amount_in": values[0],
+                    "amount_out": values[1],
+                    "pool_type": "SOL/USDC",
+                }
+        except struct.error:
+            pass
+        
+        return None  # All attempts failed
     finally:
         # Log validation summary for cross-checking
         if 'values' in locals():
@@ -245,8 +279,6 @@ def decode_ray_log(ray_log: str, signature: Optional[str] = None) -> Optional[Di
             logger.info("Pool Type: SOL/USDC")
             if signature:
                 logger.info("Explorer URL: https://explorer.solana.com/tx/%s?cluster=devnet", signature)
-        logger.error("Failed to decode ray_log: %s", e)
-        return None
 
 
 if __name__ == "__main__":
