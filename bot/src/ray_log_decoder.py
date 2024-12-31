@@ -65,7 +65,11 @@ def calculate_fees(amount: int, pool_type: str) -> Tuple[int, Decimal]:
 
 
 def determine_trade_direction(amount_in: int, amount_out: int, pool_type: str) -> str:
-    """Determine if a trade is buying or selling SOL based on normalized amounts.
+    """Determine if a trade is buying or selling SOL based on decimal places.
+    
+    For SOL/USDC pool:
+    - Buy: SOL -> USDC (9 decimals -> 6 decimals)
+    - Sell: USDC -> SOL (6 decimals -> 9 decimals)
     
     Args:
         amount_in: Input amount in lamports/smallest unit
@@ -79,45 +83,29 @@ def determine_trade_direction(amount_in: int, amount_out: int, pool_type: str) -
     if pool_type not in POOL_CONFIGS:
         logger.warning(f"Unsupported pool type: {pool_type}")
         return "unknown"
-        
-    pool_config = POOL_CONFIGS[pool_type]
-    token_a_decimals = pool_config["token_a_decimals"]  # SOL decimals
-    token_b_decimals = pool_config["token_b_decimals"]  # USDC/USDT decimals
     
-    # Normalize amounts to account for decimal differences
-    normalized_in = Decimal(str(amount_in)) / Decimal(str(10 ** token_a_decimals))
-    normalized_out = Decimal(str(amount_out)) / Decimal(str(10 ** token_b_decimals))
+    # For SOL/USDC pool:
+    # Buy: SOL -> USDC
+    # - Input has 9 decimals (SOL)
+    # - Output has 6 decimals (USDC)
+    # Sell: USDC -> SOL
+    # - Input has 6 decimals (USDC)
+    # - Output has 9 decimals (SOL)
+    
+    input_magnitude = len(str(amount_in))
+    output_magnitude = len(str(amount_out))
     
     if pool_type in ["SOL/USDC", "SOL/USDT"]:
-        # Buy: Trading USDC/USDT (token_b) for SOL (token_a)
-        # Example: 40 USDC -> 1.9 SOL
-        # - amount_in would be 40_000_000 (6 decimals)
-        # - amount_out would be 1_900_000_000 (9 decimals)
-        # Sell: Trading SOL (token_a) for USDC/USDT (token_b)
-        # Example: 2 SOL -> 38 USDC
-        # - amount_in would be 2_000_000_000 (9 decimals)
-        # - amount_out would be 38_000_000 (6 decimals)
-        
-        # Compare normalized amounts to determine direction
-        # For SOL/USDC:
-        # Buy: USDC (6 decimals) -> SOL (9 decimals)
-        # Example: 40 USDC (40_000_000) -> 1.9 SOL (1_900_000_000)
-        # Sell: SOL (9 decimals) -> USDC (6 decimals)
-        # Example: 2 SOL (2_000_000_000) -> 38 USDC (38_000_000)
-        
-        # Scale amounts to same decimal places (9) for comparison
-        scaled_in = Decimal(str(amount_in)) * Decimal(str(10 ** (9 - token_b_decimals)))
-        scaled_out = Decimal(str(amount_out))
-        
-        logger.debug(f"Scaled amounts - In: {scaled_in}, Out: {scaled_out}")
-        
-        # If scaled input is smaller than output, it's a buy (USDC -> SOL)
-        # If scaled input is larger than output, it's a sell (SOL -> USDC)
-        if scaled_in < scaled_out:
-            return "buy"
-        else:
+        # SOL has 9 decimals, USDC/USDT have 6
+        # More decimals = SOL, fewer decimals = USDC/USDT
+        # For equal magnitudes, always default to sell
+        # When normalized values are equal, default to sell
+        if input_magnitude == output_magnitude:
             return "sell"
-            
+        # If input has more decimals (9), it's SOL -> USDC/USDT (buy)
+        # If input has fewer decimals (6), it's USDC/USDT -> SOL (sell)
+        return "sell" if input_magnitude < output_magnitude else "buy"
+    
     return "unknown"
 
 
