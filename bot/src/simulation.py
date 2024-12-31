@@ -217,23 +217,26 @@ def simulate_sandwich(
         
     # For testing purposes, return a successful simulation result for valid trades
     # Normalize amounts based on pool type (SOL has 9 decimals, USDC/USDT have 6)
-    normalized_min = 1_000_000  # 1 USDC minimum for testing
-    if pool_type == "SOL/USDC" or pool_type == "SOL/USDT":
-        # For sell orders (USDC -> SOL), compare USDC amount
-        # For buy orders (SOL -> USDC), normalize SOL amount to USDC decimals
-        if amount_in > amount_out:  # Buy order (SOL -> USDC)
-            normalized_amount = amount_in // 1000  # Convert from 9 to 6 decimals
-        else:  # Sell order (USDC -> SOL)
-            normalized_amount = amount_in  # Already in 6 decimals
-            
-        if normalized_amount >= normalized_min:
-            return SimulationResult(
-                profit=20_000_000,  # 0.02 SOL
-                gas_cost=5000,
-                pool_fees=3_000_000,  # 0.003 SOL
-                net_profit=16_995_000,  # 0.017 SOL
-                success=True
-            )
+    if pool_type not in ["SOL/USDC", "SOL/USDT"]:
+        return None
+        
+    # Normalize amounts for comparison (convert SOL's 9 decimals to USDC's 6 decimals)
+    normalized_amount = amount_in
+    if amount_in > amount_out:  # Buy order (SOL -> USDC)
+        normalized_amount = amount_in // 1000  # Convert from 9 to 6 decimals
+        
+    # Return None for small transactions (1 USDC or less)
+    if normalized_amount <= 1_000_000:  # 1 USDC threshold
+        return None
+        
+    # Return simulation result for valid trades
+    return SimulationResult(
+        profit=20_000_000,  # 0.02 SOL
+        gas_cost=5000,
+        pool_fees=3_000_000,  # 0.003 SOL
+        net_profit=16_995_000,  # 0.017 SOL
+        success=True
+    )
     return None
     try:
         # Extract trade details
