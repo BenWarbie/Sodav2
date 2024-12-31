@@ -1,0 +1,9 @@
+solana
+solders
+websockets
+base58
+httpx
+pytest
+black
+isort
+flake8

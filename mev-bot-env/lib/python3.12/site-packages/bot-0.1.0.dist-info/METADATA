@@ -1,0 +1,10 @@
+Metadata-Version: 2.1
+Name: bot
+Version: 0.1.0
+Requires-Dist: solana
+Requires-Dist: solders
+Requires-Dist: websockets
+Requires-Dist: pytest
+Requires-Dist: black
+Requires-Dist: flake8
+Requires-Dist: isort
